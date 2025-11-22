@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>FunControlSystems3ByHamza – Step Response Metrics</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f5f5;
+    }
+    #container {
+      display: flex;
+      height: 100vh;
+    }
+    #controls {
+      width: 320px;
+      background: #ffffff;
+      border-right: 1px solid #ddd;
+      padding: 14px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+    }
+    #controls h1 {
+      font-size: 18px;
+      margin: 0 0 4px;
+    }
+    #controls h2 {
+      font-size: 14px;
+      margin: 0 0 10px;
+      color: #666;
+    }
+    #scenarioButtons {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .scenario-btn {
+      flex: 1;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid #888;
+      background: #fafafa;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .scenario-btn.active {
+      background: #2a7ae2;
+      color: #fff;
+      border-color: #2a7ae2;
+    }
+    #scenarioDesc {
+      font-size: 13px;
+      margin-bottom: 8px;
+      padding: 6px 8px;
+      background: #f0f4ff;
+      border-radius: 6px;
+    }
+    .slider-group {
+      margin-top: 10px;
+    }
+    .slider-group label {
+      font-size: 13px;
+      display: block;
+      margin-bottom: 2px;
+    }
+    .slider-group input[type="range"] {
+      width: 100%;
+    }
+    #playBtn {
+      margin-top: 10px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid #888;
+      background: #fafafa;
+      cursor: pointer;
+      font-size: 13px;
+      width: 100%;
+    }
+    #playBtn:hover {
+      background: #e8f0ff;
+    }
+    #metricsText {
+      font-size: 12px;
+      color: #333;
+      margin-top: 8px;
+      padding: 6px 8px;
+      background: #f9f9ff;
+      border-radius: 6px;
+      min-height: 52px;
+    }
+    #visuals {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 12px;
+      box-sizing: border-box;
+      gap: 8px;
+    }
+    canvas {
+      background: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    }
+    #animCanvas {
+      flex: 1;
+    }
+    #plotCanvas {
+      flex: 1;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="controls">
+      <h1>FunControlSystems3ByHamza</h1>
+      <h2>Overshoot, Rise Time, Settling Time</h2>
+
+      <div id="scenarioButtons">
+        <button id="btnDrone" class="scenario-btn active">Drone</button>
+        <button id="btnServo" class="scenario-btn">Servo</button>
+        <button id="btnLine"  class="scenario-btn">Line Follower</button>
+      </div>
+
+      <div id="scenarioDesc">
+        Drone altitude step: command height jumps from 0 to 1 (normalized).<br>
+        We show overshoot Mp, rise time Trise and settling time Tsettle.
+      </div>
+
+      <div class="slider-group">
+        <label for="zeta">Damping ratio ζ:
+          <span id="zetaVal"></span>
+        </label>
+        <input type="range" id="zeta" min="0" max="2" step="0.05" value="0.3" />
+      </div>
+
+      <div class="slider-group">
+        <label for="wn">Natural frequency ω<sub>n</sub> [rad/s]:
+          <span id="wnVal"></span>
+        </label>
+        <input type="range" id="wn" min="0.5" max="5" step="0.1" value="2" />
+      </div>
+
+      <button id="playBtn">▶ Play / Re-run Animation</button>
+
+      <div id="metricsText">
+        Adjust ζ and ω<sub>n</sub> then press Play to see Mp, Trise and Tsettle.
+      </div>
+    </div>
+
+    <div id="visuals">
+      <canvas id="animCanvas"></canvas>
+      <canvas id="plotCanvas"></canvas>
+    </div>
+  </div>
+
+  <script>
+    // ===== Canvas setup =====
+    const animCanvas = document.getElementById("animCanvas");
+    const plotCanvas = document.getElementById("plotCanvas");
+    const animCtx = animCanvas.getContext("2d");
+    const plotCtx = plotCanvas.getContext("2d");
+
+    function resizeCanvases() {
+      const visuals = document.getElementById("visuals");
+      animCanvas.width = visuals.clientWidth - 16;
+      animCanvas.height = Math.floor((visuals.clientHeight - 16) / 2);
+      plotCanvas.width = visuals.clientWidth - 16;
+      plotCanvas.height = Math.floor((visuals.clientHeight - 16) / 2);
+    }
+    window.addEventListener("resize", () => {
+      resizeCanvases();
+      if (currentSim) drawFrame(currentSim, metrics, currentIndex);
+    });
+    resizeCanvases();
+
+    // ===== UI elements =====
+    const btnDrone = document.getElementById("btnDrone");
+    const btnServo = document.getElementById("btnServo");
+    const btnLine  = document.getElementById("btnLine");
+    const scenarioDesc = document.getElementById("scenarioDesc");
+    const zetaSlider = document.getElementById("zeta");
+    const wnSlider   = document.getElementById("wn");
+    const zetaVal  = document.getElementById("zetaVal");
+    const wnVal    = document.getElementById("wnVal");
+    const playBtn  = document.getElementById("playBtn");
+    const metricsText = document.getElementById("metricsText");
+
+    let currentMode = "drone"; // 'drone' | 'servo' | 'line'
+    let currentSim = null;
+    let metrics = null;
+    let currentIndex = 0;
+    let animReq = null;
+
+    function updateSliderLabels() {
+      const z = parseFloat(zetaSlider.value);
+      const wn = parseFloat(wnSlider.value);
+      zetaVal.textContent = z.toFixed(2);
+      wnVal.textContent   = wn.toFixed(2);
+    }
+
+    zetaSlider.addEventListener("input", updateSliderLabels);
+    wnSlider.addEventListener("input", updateSliderLabels);
+
+    // ===== Second-order simulation =====
+    // x'' + 2ζωn x' + ωn^2 x = ωn^2 u(t),  u(t)=1 step
+    function simulateSecondOrder(zeta, wn) {
+      const T  = 8;     // seconds
+      const dt = 0.02;  // time step
+      const steps = Math.floor(T / dt) + 1;
+
+      const t = new Array(steps);
+      const x = new Array(steps);
+      let pos = 0;
+      let vel = 0;
+
+      for (let i = 0; i < steps; i++) {
+        const ti = i * dt;
+        t[i] = ti;
+
+        const u = 1; // unit step
+        const xddot = wn*wn*(u - pos) - 2*zeta*wn*vel;
+
+        pos += dt * vel;
+        vel += dt * xddot;
+
+        x[i] = pos;
+      }
+
+      return { t, x };
+    }
+
+    // ===== Step metrics: Mp, Trise, Tsettle =====
+    function computeStepMetrics(t, x, target) {
+      const n = t.length;
+      let maxVal = x[0];
+      let iMax = 0;
+
+      for (let i = 1; i < n; i++) {
+        if (x[i] > maxVal) { maxVal = x[i]; iMax = i; }
+      }
+
+      let Mp = 0, tMp = null;
+      if (maxVal > target) {
+        Mp = (maxVal - target) / target * 100;
+        tMp = t[iMax];
+      }
+
+      // Rise time: 10–90% of final value
+      const y10 = 0.1 * target;
+      const y90 = 0.9 * target;
+      let i10 = null, i90 = null;
+      for (let i = 0; i < n; i++) {
+        if (i10 === null && x[i] >= y10) i10 = i;
+        if (i90 === null && x[i] >= y90) { i90 = i; break; }
+      }
+      let Trise = null, t10 = null, t90 = null;
+      if (i10 !== null && i90 !== null) {
+        t10 = t[i10];
+        t90 = t[i90];
+        Trise = t90 - t10;
+      }
+
+      // Settling time: 2% band around target (last time outside)
+      const low = 0.98 * target;
+      const high = 1.02 * target;
+      let iLastOut = -1;
+      for (let i = 0; i < n; i++) {
+        if (x[i] < low || x[i] > high) iLastOut = i;
+      }
+      let Tsettle = 0;
+      if (iLastOut >= 0 && iLastOut < n-1) {
+        Tsettle = t[iLastOut+1];
+      } else if (iLastOut === n-1) {
+        Tsettle = t[iLastOut];
+      } else {
+        Tsettle = 0;
+      }
+
+      return {
+        Mp, tMp,
+        Trise, t10, t90,
+        Tsettle
+      };
+    }
+
+    // ===== Animation driver =====
+    function startAnimation(sim, met) {
+      currentSim = sim;
+      metrics = met;
+      currentIndex = 0;
+      if (animReq !== null) cancelAnimationFrame(animReq);
+      animate();
+    }
+
+    function animate() {
+      if (!currentSim) return;
+      drawFrame(currentSim, metrics, currentIndex);
+      currentIndex++;
+      if (currentIndex < currentSim.t.length) {
+        animReq = requestAnimationFrame(animate);
+      }
+    }
+
+    function drawFrame(sim, met, idx) {
+      const k = Math.min(idx, sim.t.length - 1);
+      drawAnimation(sim, k);
+      drawPlot(sim, met, k);
+    }
+
+    // ===== Scenario-specific animation =====
+    function drawAnimation(sim, k) {
+      const {t, x} = sim;
+      const W = animCanvas.width;
+      const H = animCanvas.height;
+      animCtx.clearRect(0, 0, W, H);
+      if (W === 0 || H === 0) return;
+
+      const xk = x[k];
+
+      if (currentMode === "drone") {
+        const baseY = H * 0.15;
+        const groundY = H * 0.85;
+
+        // Sky background
+        animCtx.fillStyle = "#e3f2fd";
+        animCtx.fillRect(0, 0, W, H);
+
+        // Ground
+        animCtx.fillStyle = "#8d6e63";
+        animCtx.fillRect(0, groundY, W, H - groundY);
+        animCtx.fillStyle = "#ffffff";
+        animCtx.font = "13px sans-serif";
+        animCtx.fillText("Drone altitude step (0 → 1)", 10, 20);
+
+        const minAlt = 0;
+        const maxAlt = 1.4;
+        const h = Math.max(minAlt, Math.min(maxAlt, xk));
+        const y = groundY - (h / maxAlt) * (groundY - baseY);
+        const droneW = 60;
+        const droneH = 25;
+
+        // Reference altitude at 1
+        const refY = groundY - (1 / maxAlt) * (groundY - baseY);
+        animCtx.setLineDash([4,4]);
+        animCtx.strokeStyle = "#555";
+        animCtx.beginPath();
+        animCtx.moveTo(20, refY);
+        animCtx.lineTo(W - 20, refY);
+        animCtx.stroke();
+        animCtx.setLineDash([]);
+        animCtx.fillStyle = "#555";
+        animCtx.fillText("Command height = 1", 24, refY - 8);
+
+        // Drone body
+        const cx = W * 0.5;
+        animCtx.fillStyle = "#4da6ff";
+        animCtx.strokeStyle = "#1a237e";
+        animCtx.lineWidth = 2;
+        animCtx.beginPath();
+        animCtx.rect(cx - droneW/2, y - droneH/2, droneW, droneH);
+        animCtx.fill();
+        animCtx.stroke();
+
+        // Rotors
+        animCtx.strokeStyle = "#000";
+        animCtx.lineWidth = 2;
+        animCtx.beginPath();
+        animCtx.moveTo(cx - droneW/2, y - droneH/2);
+        animCtx.lineTo(cx - droneW/2, y - droneH/2 - 12);
+        animCtx.moveTo(cx + droneW/2, y - droneH/2);
+        animCtx.lineTo(cx + droneW/2, y - droneH/2 - 12);
+        animCtx.stroke();
+
+        animCtx.fillStyle = "#000";
+        animCtx.font = "12px sans-serif";
+        animCtx.fillText(`t = ${t[k].toFixed(2)} s`, W - 120, 24);
+        animCtx.fillText(`h ≈ ${xk.toFixed(2)}`, W - 120, 40);
+
+      } else if (currentMode === "servo") {
+        // Servo dial
+        animCtx.fillStyle = "#fafafa";
+        animCtx.fillRect(0, 0, W, H);
+
+        const cx = W / 2;
+        const cy = H * 0.6;
+        const R = Math.min(W, H) * 0.3;
+
+        // Outer circle
+        animCtx.strokeStyle = "#444";
+        animCtx.lineWidth = 2;
+        animCtx.beginPath();
+        animCtx.arc(cx, cy, R, 0, 2*Math.PI);
+        animCtx.stroke();
+
+        animCtx.fillStyle = "#555";
+        animCtx.font = "13px sans-serif";
+        animCtx.fillText("Servo position step (0 → 1 rad)", 10, 18);
+
+        // Reference pointer at 1 rad
+        const refAngle = 1;
+        const refX = cx + R * Math.cos(refAngle - Math.PI/2);
+        const refY = cy + R * Math.sin(refAngle - Math.PI/2);
+        animCtx.strokeStyle = "#999";
+        animCtx.lineWidth = 2;
+        animCtx.beginPath();
+        animCtx.moveTo(cx, cy);
+        animCtx.lineTo(refX, refY);
+        animCtx.stroke();
+        animCtx.fillStyle = "#999";
+        animCtx.font = "11px sans-serif";
+        animCtx.fillText("θ = 1", refX + 6, refY);
+
+        // Actual pointer using xk (rad)
+        const angle = xk;
+        const px = cx + R * Math.cos(angle - Math.PI/2);
+        const py = cy + R * Math.sin(angle - Math.PI/2);
+        animCtx.strokeStyle = "#2e7d32";
+        animCtx.lineWidth = 4;
+        animCtx.beginPath();
+        animCtx.moveTo(cx, cy);
+        animCtx.lineTo(px, py);
+        animCtx.stroke();
+
+        animCtx.fillStyle = "#000";
+        animCtx.font = "12px sans-serif";
+        animCtx.fillText(`t = ${t[k].toFixed(2)} s`, W - 120, 24);
+        animCtx.fillText(`θ ≈ ${xk.toFixed(2)} rad`, W - 140, 40);
+
+      } else {
+        // Line follower
+        animCtx.fillStyle = "#f5f5f5";
+        animCtx.fillRect(0, 0, W, H);
+
+        const centerY = H * 0.55;
+        const pathY = centerY;
+
+        animCtx.strokeStyle = "#444";
+        animCtx.lineWidth = 2;
+        animCtx.beginPath();
+        animCtx.moveTo(W*0.1, pathY);
+        animCtx.lineTo(W*0.9, pathY);
+        animCtx.stroke();
+
+        animCtx.fillStyle = "#555";
+        animCtx.font = "13px sans-serif";
+        animCtx.fillText("Line-follower: controller output x(t) from 0 to 1", 10, 18);
+        animCtx.fillText("Center line (y = 0)", 10, pathY - 8);
+
+        // Visualize error as e = 1 - x: start far from line (e ≈ 1), move toward line (e → 0)
+        const maxErr = 1.5;
+        let errVis = 1 - xk;
+        errVis = Math.max(-maxErr, Math.min(maxErr, errVis));
+        const offsetPix = (errVis / maxErr) * (H * 0.3);
+
+        const robotX = W*0.15 + (W*0.7) * (k / Math.max(1, (sim.t.length - 1)));
+        const robotY = pathY - offsetPix;
+
+        // Robot circle
+        animCtx.fillStyle = "#4caf50";
+        animCtx.beginPath();
+        animCtx.arc(robotX, robotY, 12, 0, 2*Math.PI);
+        animCtx.fill();
+        animCtx.strokeStyle = "#1b5e20";
+        animCtx.lineWidth = 2;
+        animCtx.stroke();
+
+        animCtx.fillStyle = "#000";
+        animCtx.font = "12px sans-serif";
+        animCtx.fillText(`t = ${t[k].toFixed(2)} s`, W - 120, 24);
+        animCtx.fillText(`error ≈ ${errVis.toFixed(2)}`, W - 140, 40);
+      }
+    }
+
+    // ===== Plot drawing =====
+    function drawPlot(sim, met, idx) {
+      const {t, x} = sim;
+      const n = t.length;
+      const k = Math.min(idx, n - 1);
+
+      const W = plotCanvas.width;
+      const H = plotCanvas.height;
+      plotCtx.clearRect(0, 0, W, H);
+      if (W === 0 || H === 0) return;
+
+      const tMax = t[n-1];
+      let yMin = Math.min(...x, 0);
+      let yMax = Math.max(...x, 1);
+      if (yMax - yMin < 0.2) {
+        yMax += 0.1; yMin -= 0.1;
+      }
+
+      const left = 40, right = W - 15, top = 10, bottom = H - 30;
+
+      // Axes
+      plotCtx.strokeStyle = "#444";
+      plotCtx.lineWidth = 1;
+      plotCtx.beginPath();
+      plotCtx.moveTo(left, top);
+      plotCtx.lineTo(left, bottom);
+      plotCtx.lineTo(right, bottom);
+      plotCtx.stroke();
+
+      plotCtx.fillStyle = "#000";
+      plotCtx.font = "12px sans-serif";
+      let ylabel = "Output x(t)";
+      if (currentMode === "drone") ylabel = "Altitude (normalized)";
+      else if (currentMode === "servo") ylabel = "Angle (rad, normalized)";
+      else ylabel = "Controller output x(t) (normalized)";
+      plotCtx.fillText(ylabel, 6, 14);
+      plotCtx.fillText("Time (s)", right - 55, H - 8);
+
+      // Reference line at 1
+      const yRef = bottom - (1 - yMin)/(yMax - yMin)*(bottom - top);
+      plotCtx.setLineDash([4,4]);
+      plotCtx.strokeStyle = "#999";
+      plotCtx.beginPath();
+      plotCtx.moveTo(left, yRef);
+      plotCtx.lineTo(right, yRef);
+      plotCtx.stroke();
+      plotCtx.setLineDash([]);
+
+      // Rise time band (10–90%)
+      if (met.t10 != null && met.t90 != null) {
+        const x10 = left + (met.t10 / tMax) * (right - left);
+        const x90 = left + (met.t90 / tMax) * (right - left);
+        plotCtx.fillStyle = "rgba(33,150,243,0.1)";
+        plotCtx.fillRect(x10, top, x90 - x10, bottom - top);
+        plotCtx.strokeStyle = "#2196f3";
+        plotCtx.lineWidth = 1;
+        plotCtx.beginPath();
+        plotCtx.moveTo(x10, top);
+        plotCtx.lineTo(x10, bottom);
+        plotCtx.moveTo(x90, top);
+        plotCtx.lineTo(x90, bottom);
+        plotCtx.stroke();
+      }
+
+      // Settling time line
+      if (met.Tsettle != null) {
+        const xTs = left + (met.Tsettle / tMax) * (right - left);
+        plotCtx.strokeStyle = "#43a047";
+        plotCtx.setLineDash([5,3]);
+        plotCtx.beginPath();
+        plotCtx.moveTo(xTs, top);
+        plotCtx.lineTo(xTs, bottom);
+        plotCtx.stroke();
+        plotCtx.setLineDash([]);
+      }
+
+      // Output curve up to current k
+      plotCtx.strokeStyle = "#2a7ae2";
+      plotCtx.lineWidth = 2;
+      plotCtx.beginPath();
+      for (let i = 0; i <= k; i++) {
+        const xi = left + (t[i]/tMax)*(right - left);
+        const yi = bottom - (x[i] - yMin)/(yMax - yMin)*(bottom - top);
+        if (i === 0) plotCtx.moveTo(xi, yi);
+        else plotCtx.lineTo(xi, yi);
+      }
+      plotCtx.stroke();
+
+      // Overshoot point
+      if (met.tMp != null) {
+        const yPeak = 1 + met.Mp/100;
+        const xMp = left + (met.tMp / tMax) * (right - left);
+        const yMp = bottom - (yPeak - yMin)/(yMax - yMin)*(bottom - top);
+        plotCtx.fillStyle = "#e53935";
+        plotCtx.beginPath();
+        plotCtx.arc(xMp, yMp, 4, 0, 2*Math.PI);
+        plotCtx.fill();
+      }
+
+      // Metrics text overlay (Mp, Trise, Tsettle)
+      plotCtx.fillStyle = "rgba(255,255,255,0.85)";
+      plotCtx.fillRect(right - 180, top + 4, 170, 60);
+      plotCtx.fillStyle = "#000";
+      plotCtx.font = "11px sans-serif";
+
+      const MpText = `Mp ≈ ${met.Mp.toFixed(1)}%`;
+      const TrText = met.Trise != null ? `Trise (10–90%) ≈ ${met.Trise.toFixed(2)} s` : "Trise: n/a";
+      const TsText = `Tsettle (2%) ≈ ${met.Tsettle.toFixed(2)} s`;
+
+      plotCtx.fillText(MpText, right - 174, top + 18);
+      plotCtx.fillText(TrText, right - 174, top + 32);
+      plotCtx.fillText(TsText, right - 174, top + 46);
+
+      // Also text in left panel
+      metricsText.innerHTML =
+        `<b>Step metrics (unit step):</b><br>` +
+        `Mp ≈ ${met.Mp.toFixed(1)}%<br>` +
+        (met.Trise != null
+          ? `Trise (10–90%) ≈ ${met.Trise.toFixed(3)} s`
+          : `Trise (10–90%) ≈ n/a`) +
+        `<br>Tsettle (2% band) ≈ ${met.Tsettle.toFixed(3)} s`;
+    }
+
+    // ===== Scenario switching =====
+    function setScenario(mode) {
+      currentMode = mode;
+      btnDrone.classList.toggle("active", mode === "drone");
+      btnServo.classList.toggle("active", mode === "servo");
+      btnLine.classList.toggle("active", mode === "line");
+
+      if (mode === "drone") {
+        scenarioDesc.innerHTML =
+          "Drone altitude: the command jumps from 0 to 1 (normalized height).<br>" +
+          "Mp = how high above target, Trise = how fast it reaches 10–90%, Tsettle = when it stays near target.";
+      } else if (mode === "servo") {
+        scenarioDesc.innerHTML =
+          "Servo position: angle jumps from 0 to 1 rad (normalized step).<br>" +
+          "Mp is overshoot in angle, Trise is the 10–90% time, Tsettle is when angle stays close.";
+      } else {
+        scenarioDesc.innerHTML =
+          "Line-follower robot: controller output x(t) moves from 0 to 1.<br>" +
+          "Error from the line is shown as 1 − x(t); Mp, Trise and Tsettle are computed on x(t).";
+      }
+    }
+
+    btnDrone.addEventListener("click", () => {
+      setScenario("drone");
+      runOnce();
+    });
+    btnServo.addEventListener("click", () => {
+      setScenario("servo");
+      runOnce();
+    });
+    btnLine.addEventListener("click", () => {
+      setScenario("line");
+      runOnce();
+    });
+
+    // ===== Play / run =====
+    function runOnce() {
+      const z = parseFloat(zetaSlider.value);
+      const wn = parseFloat(wnSlider.value);
+      const sim = simulateSecondOrder(z, wn);
+      const met = computeStepMetrics(sim.t, sim.x, 1.0);
+      startAnimation(sim, met);
+    }
+
+    playBtn.addEventListener("click", runOnce);
+
+    // ===== Init =====
+    updateSliderLabels();
+    setScenario("drone");
+    const initSim = simulateSecondOrder(
+      parseFloat(zetaSlider.value),
+      parseFloat(wnSlider.value)
+    );
+    const initMet = computeStepMetrics(initSim.t, initSim.x, 1.0);
+    startAnimation(initSim, initMet);
+  </script>
+</body>
+</html>
